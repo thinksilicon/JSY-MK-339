@@ -1,0 +1,16 @@
+[Unit]
+Description=Post powermeter values on MQTT
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+Restart=always
+WatchdogSec=65
+
+User=powermeter
+Group=powermeter
+ExecStart=/usr/local/bin/powermeter-mqtt.pl --config=/usr/local/etc/powermeter.ini
+
+[Install]
+WantedBy=multi-user.target
