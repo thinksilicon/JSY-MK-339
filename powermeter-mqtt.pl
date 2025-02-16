@@ -185,7 +185,7 @@ if( $settings->val( "Powermeter", "is_three_phase" ) ) {
 	$valuemap->{"Total_apparent"}->{"n"}->{"L3"} = 4;
 }
 
-my $accumulator = read_json_from_file( $settings->val( "Modbus", "accumulator_file" ) );
+my $accumulator = read_json_from_file( $settings->val( "Powermeter", "accumulator_file" ) );
 
 
 # Build homie registration
@@ -302,7 +302,7 @@ sub STOP_LOOP {
 	$mqtt->retain( $topic.'$state', "disconnected" );
 	$mqtt->disconnect();
 
-	save_json_to_file( $accumulator, $settings->val( "Modbus", "accumulator_file" ) );
+	save_json_to_file( $accumulator, $settings->val( "Powermeter", "accumulator_file" ) );
 
 	$publish->stop;
 	$watchdog->stop;
