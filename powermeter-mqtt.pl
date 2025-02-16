@@ -8,6 +8,8 @@ use IO::Async::Loop;
 use IO::Async::Timer::Periodic;
 use Getopt::Long;
 use Config::IniFiles;
+use JSON;
+use File::Slurp;
 
 $| = 1;    # piping hot!
 
@@ -131,7 +133,8 @@ my $valuemap = {
 			"L1" => 0,
 			"L2" => 2,
 			"total" => 6
-		}
+		},
+		"accum" => 65535
 	},
 	"Total_Reactive" => {
 		"r" => 0x0068,
@@ -142,7 +145,8 @@ my $valuemap = {
 			"L1" => 0,
 			"L2" => 2,
 			"total" => 6
-		}
+		},
+		"accum" => 65535
 	},
 	"Total_Apparent" => {
 		"r" => 0x0070,
@@ -153,7 +157,8 @@ my $valuemap = {
 			"L1" => 0,
 			"L2" => 2,
 			"total" => 6
-		}
+		},
+		"accum" => 65535
 	},
 	"Frequency" => {
 		"r" => 0x0077,
@@ -179,6 +184,9 @@ if( $settings->val( "Powermeter", "is_three_phase" ) ) {
 	$valuemap->{"Total_reactive"}->{"n"}->{"L3"} = 4;
 	$valuemap->{"Total_apparent"}->{"n"}->{"L3"} = 4;
 }
+
+my $accumulator = read_json_from_file( $settings->val( "Modbus", "accumulator_file" ) );
+
 
 # Build homie registration
 $mqtt->last_will( $topic.'$state', "lost" );
@@ -222,8 +230,29 @@ my $publish = IO::Async::Timer::Periodic->new(
 			if( $response->success ) {
 				print "$measure:\n" if( $verbose );
 				foreach my $node ( sort keys %{$valuemap->{$measure}->{"n"}} ) {
-					print "\t$node: ".( @{$response->values}[ $valuemap->{$measure}->{"n"}->{$node} ] / $valuemap->{$measure}->{"d"} )." ".$valuemap->{$measure}->{"u"}."\n" if( $verbose );
-					$mqtt->publish( $topic.lc( $measure )."/".lc( $node ), ( @{$response->values}[ $valuemap->{$measure}->{"n"}->{$node} ] / $valuemap->{$measure}->{"d"} ) );
+					my $reg_value = ( @{$response->values}[ $valuemap->{$measure}->{"n"}->{$node} ] / $valuemap->{$measure}->{"d"} );
+                                        if( defined( $valuemap->{$measure}->{"accum"} ) ) {
+                                                if( !defined( $accumulator->{$measure.":".$node} ) )  {
+                                                        $accumulator->{$measure.":".$node}->{"current"} = $reg_value;
+                                                        $accumulator->{$measure.":".$node}->{"accum"} = 0;
+                                                } else {
+                                                        if( $accumulator->{$measure.":".$node}->{"current"} > $reg_value ) {
+                                                                # When the new value is smaller than the last value, we've had an overflow of the register value
+                                                                # We then add the maximum of the register value to our accumulator
+								print( "Register overrun detetected, increasing accumulator.\n" ) if( $verbose );
+                                                                $accumulator->{$measure.":".$node}->{"accum"} += ( $valuemap->{$measure}->{"accum"} / $valuemap->{$measure}->{"d"} );
+                                                        }
+
+                                                        $accumulator->{$measure.":".$node}->{"current" } = $reg_value;
+
+                                                        # finally update our register_value with the accumulated total value
+                                                        $reg_value += $accumulator->{$measure.":".$node}->{"accum"};
+                                                }
+                                        }
+
+                                        print "\t$node: $reg_value ".$valuemap->{$measure}->{"u"}."\n" if( $verbose );;
+                                        $mqtt->publish( $topic.lc( $measure )."/".lc( $node ), $reg_value );
+
 				}
 				print "\n" if( $verbose );
 			} else {
@@ -251,9 +280,29 @@ $watchdog->start;
 notify( READY => 1 );
 $loop->run;
 
+sub save_json_to_file {
+        my ( $var, $file ) = @_;
+        my $json = JSON->new->utf8->pretty->canonical;  # Encode in a human-readable, consistent format
+        my $json_text = $json->encode($var);
+        write_file( $file, { binmode => ':utf8' }, $json_text );
+}
+
+sub read_json_from_file {
+        my ( $file ) = @_;
+        if( -f $file ) {
+                my $json = JSON->new->utf8;
+                my $json_text = read_file($file, { binmode => ':utf8' });
+                return $json->decode( $json_text );
+        } else {
+                return {};
+        }
+}
+
 sub STOP_LOOP {
 	$mqtt->retain( $topic.'$state', "disconnected" );
 	$mqtt->disconnect();
+
+	save_json_to_file( $accumulator, $settings->val( "Modbus", "accumulator_file" ) );
 
 	$publish->stop;
 	$watchdog->stop;
